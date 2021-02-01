@@ -22,7 +22,8 @@ from tf_bodypix.utils.image import (
     ImageSize,
     resize_image_to,
     get_image_size,
-    box_blur_image
+    box_blur_image,
+    bounding_box
 )
 from tf_bodypix.utils.s3 import iter_s3_file_urls
 from tf_bodypix.download import download_model
@@ -537,14 +538,54 @@ class ReplaceBackgroundApp(AbstractWebcamFilterApp):
         self.timer.on_step_start('get_mask')
         mask = self.get_mask(result)
         self.timer.on_step_start('compose')
+        image_size = get_image_size(image_array)
         background_image_array = resize_image_to(
-            background_image_array, get_image_size(image_array)
+            background_image_array, image_size
         )
         output = np.clip(
             background_image_array * (1 - mask)
             + image_array * mask,
             0.0, 255.0
         )
+        
+        # Auto frame feature
+        # TODO: add flag check
+
+        # Find the bounds of the face mask
+        face_mask = result.get_part_mask(
+                mask, part_names=['left_face', 'right_face'], resize_method=DEFAULT_RESIZE_METHOD)
+        try:
+          bounds = bounding_box(face_mask)
+          # LOGGER.info("face bbox=%dx%d", bounds.cmax-bounds.cmin, bounds.rmax-bounds.rmin)
+
+          # Add a buffer of 20px above and below the face and 
+          # crop to the height and width to match the aspect ratio of image_size
+          PADDING = 20
+          rmin = bounds.rmin - PADDING
+          rmax = bounds.rmax + PADDING
+
+          if rmin<0:
+            rmin = 0
+            rmax = bounds.rmax-bounds.rmin + PADDING*2
+          elif rmax>=image_size.height:
+            rmax = image_size.height-1
+            rmin = rmax - (bounds.rmax-bounds.rmin + PADDING*2)
+
+          height = rmax - rmin
+          width = int(height*image_size.width / image_size.height)
+          LOGGER.info("cropped size=(%d, %d)", width, height)
+
+          cmin = (bounds.cmin+bounds.cmax-width)/2 - PADDING
+          cmax = cmin+width + PADDING
+
+          # more here...
+
+
+        except ValueError as _:
+          LOGGER.info("No face found, not cropping")
+          # don't crop
+          return output
+
         return output
 
 

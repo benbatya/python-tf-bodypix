@@ -26,6 +26,8 @@ class SimpleImageArray:
 
 ImageArray = Union[np.ndarray, SimpleImageArray]
 
+BoundingBox = namedtuple('BoundingBox', ('rmin', 'rmax', 'cmin', 'cmax'))
+
 
 def require_opencv():
     if cv2 is None:
@@ -65,3 +67,21 @@ def bgr_to_rgb(image: ImageArray) -> ImageArray:
 
 def rgb_to_bgr(image: ImageArray) -> ImageArray:
     return bgr_to_rgb(image)
+
+
+def bounding_box(img: ImageArray) -> BoundingBox:
+    """
+    From https://stackoverflow.com/a/31402351/4228547
+    """
+    rows = np.any(img, axis=1)
+    cols = np.any(img, axis=0)
+
+    vRows = np.where(rows)
+    vCols = np.where(cols)
+    if len(vRows[0]) == 0 or len(vCols[0]) == 0:
+        raise ValueError("empty mask")
+
+    rmin, rmax = vRows[0][[0, -1]]
+    cmin, cmax = vCols[0][[0, -1]]
+       
+    return BoundingBox(rmin=rmin, rmax=rmax, cmin=cmin, cmax=cmax)
