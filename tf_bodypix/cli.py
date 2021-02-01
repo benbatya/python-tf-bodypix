@@ -16,6 +16,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = "3"
 
 import tensorflow as tf
 import numpy as np
+import cv2
 
 from tf_bodypix.utils.timer import LoggingTimer
 from tf_bodypix.utils.image import (
@@ -556,7 +557,7 @@ class ReplaceBackgroundApp(AbstractWebcamFilterApp):
                 mask, part_names=['left_face', 'right_face'], resize_method=DEFAULT_RESIZE_METHOD)
         try:
           bounds = bounding_box(face_mask)
-          # LOGGER.info("face bbox=%dx%d", bounds.cmax-bounds.cmin, bounds.rmax-bounds.rmin)
+          LOGGER.debug("face bbox=%dx%d", bounds.cmax-bounds.cmin, bounds.rmax-bounds.rmin)
 
           # Add a buffer of 20px above and below the face and 
           # crop to the height and width to match the aspect ratio of image_size
@@ -573,13 +574,24 @@ class ReplaceBackgroundApp(AbstractWebcamFilterApp):
 
           height = rmax - rmin
           width = int(height*image_size.width / image_size.height)
-          LOGGER.info("cropped size=(%d, %d)", width, height)
 
-          cmin = (bounds.cmin+bounds.cmax-width)/2 - PADDING
-          cmax = cmin+width + PADDING
+          cmin = int((bounds.cmin+bounds.cmax-width)/2)
+          cmax = int(cmin+width)
 
-          # more here...
+          if cmin<0:
+            cmin = 0
+            cmax = width
+          elif cmax>=image_size.width:
+            cmax = image_size.width-1
+            cmin = cmax - width
 
+          LOGGER.debug("crop bounds=(%d-%d, %d-%d), size=(%d, %d)",
+                        cmin, cmax, rmin, rmax, width, height)
+
+          cropped = output[rmin:rmax, cmin:cmax, :]
+          # LOGGER.info("cropped shape=%dx%d", cropped.shape[1], cropped.shape[0])
+          output = cv2.resize(cropped, dsize=(image_size.width, image_size.height))
+          # LOGGER.info("output shape=%dx%d", output.shape[1], output.shape[0])
 
         except ValueError as _:
           LOGGER.info("No face found, not cropping")
