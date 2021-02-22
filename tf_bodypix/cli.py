@@ -573,6 +573,9 @@ class ReplaceBackgroundSubCommand(AbstractWebcamFilterSubCommand):
         return ReplaceBackgroundApp(args)
 
 class AutoTrackApp(AbstractWebcamFilterApp):
+    def __init__(self, *args, **kwargs):
+        self.crops = []
+        super().__init__(*args, **kwargs)
 
     def get_output_image(self, image_array: np.ndarray) -> np.ndarray:
         # background_image_array = self.get_next_background_image(image_array)
@@ -587,51 +590,57 @@ class AutoTrackApp(AbstractWebcamFilterApp):
         # Find the bounds of the face mask
         face_mask = result.get_part_mask(
                 mask, part_names=['left_face', 'right_face'], resize_method=DEFAULT_RESIZE_METHOD)
+
         try:
-          bounds = bounding_box(face_mask)
-          LOGGER.debug("face bbox=%dx%d", bounds.cmax-bounds.cmin, bounds.rmax-bounds.rmin)
+            bounds = bounding_box(face_mask)
+            LOGGER.debug("face bbox=%dx%d", bounds.cmax-bounds.cmin, bounds.rmax-bounds.rmin)
 
-          # Add a buffer of 20px above and below the face and 
-          # crop to the height and width to match the aspect ratio of image_size
-          PADDING = self.args.padding
-          rmin = bounds.rmin - PADDING
-          rmax = bounds.rmax + PADDING
+            # Add a buffer of 20px above and below the face and 
+            # crop to the height and width to match the aspect ratio of image_size
+            PADDING = self.args.padding
+            rmin = bounds.rmin - PADDING
+            rmax = bounds.rmax + PADDING
 
-          if rmin<0:
-            rmin = 0
-            rmax = bounds.rmax-bounds.rmin + PADDING*2
-          elif rmax>=image_size.height:
-            rmax = image_size.height-1
-            rmin = rmax - (bounds.rmax-bounds.rmin + PADDING*2)
+            if rmin<0:
+              rmin = 0
+              rmax = bounds.rmax-bounds.rmin + PADDING*2
+            elif rmax>=image_size.height:
+              rmax = image_size.height-1
+              rmin = rmax - (bounds.rmax-bounds.rmin + PADDING*2)
 
-          height = rmax - rmin
-          width = int(height*image_size.width / image_size.height)
+            height = rmax - rmin
+            width = int(height*image_size.width / image_size.height)
 
-          cmin = int((bounds.cmin+bounds.cmax-width)/2)
-          cmax = int(cmin+width)
+            cmin = int((bounds.cmin+bounds.cmax-width)/2)
+            cmax = int(cmin+width)
 
-          if cmin<0:
-            cmin = 0
-            cmax = width
-          elif cmax>=image_size.width:
-            cmax = image_size.width-1
-            cmin = cmax - width
+            if cmin<0:
+              cmin = 0
+              cmax = width
+            elif cmax>=image_size.width:
+              cmax = image_size.width-1
+              cmin = cmax - width
 
-          LOGGER.debug("crop bounds=(%d-%d, %d-%d), size=(%d, %d)",
-                        cmin, cmax, rmin, rmax, width, height)
+            crop = np.array([cmin, cmax, rmin, rmax])
 
-          cropped = output[rmin:rmax, cmin:cmax, :]
-          # LOGGER.info("cropped shape=%dx%d", cropped.shape[1], cropped.shape[0])
-          output = cv2.resize(cropped, dsize=(image_size.width, image_size.height))
-          # LOGGER.info("output shape=%dx%d", output.shape[1], output.shape[0])
+            LOGGER.debug("crop bounds=(%d-%d, %d-%d), size=(%d, %d)",
+                          crop[0], crop[1], crop[2], crop[3], width, height)
+
+            self.crops.append(crop)
+            if len(self.crops) > self.args.crops_mean_count:
+                self.crops.pop(0)
+            if len(self.crops) >= 2:
+                crop = np.mean(self.crops, axis=0).astype('i')
+
+            cropped = output[crop[2]:crop[3], crop[0]:crop[1], :]
+            # LOGGER.info("cropped shape=%dx%d", cropped.shape[1], cropped.shape[0])
+            output = cv2.resize(cropped, dsize=(image_size.width, image_size.height))
+            # LOGGER.info("output shape=%dx%d", output.shape[1], output.shape[0])
 
         except ValueError as _:
-          LOGGER.info("No face found, not cropping")
-          # don't crop
-          return output
-
-        return output
-
+            LOGGER.info("No face found, not cropping")
+            # don't crop
+            return output
 
         return output
 
@@ -649,6 +658,13 @@ class AutoTrackSubCommand(AbstractWebcamFilterSubCommand):
             type=int,
             default=20,
             help="The amount of pixels to pad above and below the head."
+        )
+
+        parser.add_argument(
+            "--crops-mean-count",
+            type=int,
+            default=0,
+            help="The number of cropped boxes to average to smooth the result"
         )
 
         add_output_arguments(parser)
