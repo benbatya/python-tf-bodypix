@@ -548,9 +548,41 @@ class ReplaceBackgroundApp(AbstractWebcamFilterApp):
             + image_array * mask,
             0.0, 255.0
         )
-        
-        # Auto frame feature
-        # TODO: add flag check
+
+        return output
+
+
+class ReplaceBackgroundSubCommand(AbstractWebcamFilterSubCommand):
+    def __init__(self):
+        super().__init__("replace-background", "Replaces the background of a person")
+
+    def add_arguments(self, parser: argparse.ArgumentParser):
+        add_common_arguments(parser)
+        add_model_arguments(parser)
+        add_source_arguments(parser)
+
+        parser.add_argument(
+            "--background",
+            required=True,
+            help="The path or URL to the background image."
+        )
+
+        add_output_arguments(parser)
+
+    def get_app(self, args: argparse.Namespace) -> AbstractWebcamFilterApp:
+        return ReplaceBackgroundApp(args)
+
+class AutoTrackApp(AbstractWebcamFilterApp):
+
+    def get_output_image(self, image_array: np.ndarray) -> np.ndarray:
+        # background_image_array = self.get_next_background_image(image_array)
+        result = self.get_bodypix_result(image_array)
+        self.timer.on_step_start('get_mask')
+        mask = self.get_mask(result)
+        self.timer.on_step_start('compose')
+        image_size = get_image_size(image_array)
+
+        output = image_array
 
         # Find the bounds of the face mask
         face_mask = result.get_part_mask(
@@ -561,7 +593,7 @@ class ReplaceBackgroundApp(AbstractWebcamFilterApp):
 
           # Add a buffer of 20px above and below the face and 
           # crop to the height and width to match the aspect ratio of image_size
-          PADDING = 20
+          PADDING = self.args.padding
           rmin = bounds.rmin - PADDING
           rmax = bounds.rmax + PADDING
 
@@ -601,9 +633,11 @@ class ReplaceBackgroundApp(AbstractWebcamFilterApp):
         return output
 
 
-class ReplaceBackgroundSubCommand(AbstractWebcamFilterSubCommand):
+        return output
+
+class AutoTrackSubCommand(AbstractWebcamFilterSubCommand):
     def __init__(self):
-        super().__init__("replace-background", "Replaces the background of a person")
+        super().__init__("auto-track", "Tracks the head of a person")
 
     def add_arguments(self, parser: argparse.ArgumentParser):
         add_common_arguments(parser)
@@ -611,15 +645,16 @@ class ReplaceBackgroundSubCommand(AbstractWebcamFilterSubCommand):
         add_source_arguments(parser)
 
         parser.add_argument(
-            "--background",
-            required=True,
-            help="The path or URL to the background image."
+            "--padding",
+            type=int,
+            default=20,
+            help="The amount of pixels to pad above and below the head."
         )
 
         add_output_arguments(parser)
 
     def get_app(self, args: argparse.Namespace) -> AbstractWebcamFilterApp:
-        return ReplaceBackgroundApp(args)
+        return AutoTrackApp(args)
 
 
 SUB_COMMANDS: List[SubCommand] = [
@@ -627,7 +662,8 @@ SUB_COMMANDS: List[SubCommand] = [
     ConvertToTFLiteSubCommand(),
     DrawMaskSubCommand(),
     BlurBackgroundSubCommand(),
-    ReplaceBackgroundSubCommand()
+    ReplaceBackgroundSubCommand(),
+    AutoTrackSubCommand()
 ]
 
 SUB_COMMAND_BY_NAME: Dict[str, SubCommand] = {
