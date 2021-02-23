@@ -580,10 +580,14 @@ class AutoTrackApp(AbstractWebcamFilterApp):
     def get_output_image(self, image_array: np.ndarray) -> np.ndarray:
 
         self.timer.on_step_start('rescale')
-        WIDTH = 640
-        HEIGHT= 480
         scaled_image_array = image_array
         image_size = get_image_size(image_array)
+
+        ASPECT_RATIO = float(image_size.width) / image_size.height
+        WIDTH = 640
+        # Maintain the aspect ratio
+        HEIGHT = int(WIDTH/ASPECT_RATIO)
+
         if image_size.width!=WIDTH and image_size.height!=HEIGHT:
             scaled_image_array = cv2.resize(image_array, dsize=(WIDTH, HEIGHT))
 
@@ -613,12 +617,12 @@ class AutoTrackApp(AbstractWebcamFilterApp):
             if rmin<0:
               rmin = 0
               rmax = bounds.rmax-bounds.rmin + PADDING*2
-            elif rmax>=image_size.height:
-              rmax = image_size.height-1
+            elif rmax>=HEIGHT:
+              rmax = HEIGHT-1
               rmin = rmax - (bounds.rmax-bounds.rmin + PADDING*2)
 
             height = rmax - rmin
-            width = height*image_size.width / image_size.height
+            width = int(height*ASPECT_RATIO)
 
             cmin = (bounds.cmin+bounds.cmax-width)/2
             cmax = cmin+width
@@ -626,8 +630,8 @@ class AutoTrackApp(AbstractWebcamFilterApp):
             if cmin<0:
               cmin = 0
               cmax = width
-            elif cmax>=image_size.width:
-              cmax = image_size.width-1
+            elif cmax>=WIDTH:
+              cmax = WIDTH-1
               cmin = cmax - width
 
             crop = np.array([cmin, cmax, rmin, rmax], dtype=float)
@@ -641,14 +645,17 @@ class AutoTrackApp(AbstractWebcamFilterApp):
             if len(self.crops) >= 2:
                 crop = np.mean(self.crops, axis=0).astype('f')
 
-            aspect_ratio = image_size.width / WIDTH
-            crop *= aspect_ratio
+            aspect_ratio_w = image_size.width / WIDTH
+            aspect_ratio_h = image_size.height / HEIGHT
 
-            cropped = image_array[int(crop[2]):int(crop[3]), int(crop[0]):int(crop[1]), :]
+            # TODO: make the crop use the output aspect ratio of 640/480 instead of the hort squash
+            cropped = image_array[int(crop[2]*aspect_ratio_h):int(crop[3]*aspect_ratio_h), 
+                                  int(crop[0]*aspect_ratio_w):int(crop[1]*aspect_ratio_w), :]
             # LOGGER.info("cropped shape=%dx%d", cropped.shape[1], cropped.shape[0])
-            output = cv2.resize(cropped, dsize=(WIDTH, HEIGHT))
+            output = cv2.resize(cropped, dsize=(640, 480))
             # LOGGER.info("output shape=%dx%d", output.shape[1], output.shape[0])
 
+            self.timer.on_step_end()
             return output
 
         except ValueError as _:
