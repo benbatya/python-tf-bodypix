@@ -1,0 +1,214 @@
+diff --git a/.gitignore b/.gitignore
+index fbcb3d5..6a6532b 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -6,3 +6,5 @@ build
+ *.egg-info
+ 
+ *.pyc
++.vscode
++*.patch
+diff --git a/sample_params.sh b/sample_params.sh
+new file mode 100755
+index 0000000..5b5e98a
+--- /dev/null
++++ b/sample_params.sh
+@@ -0,0 +1,8 @@
++#!/bin/bash
++
++# python -m tf_bodypix replace-background --source /dev/video0 --mask-mean-count=2 --mask-blur=10 --threshold=0.65 --background ~/Documents/art/beach.webp --output /dev/video4
++
++python -m tf_bodypix auto-track --source /dev/video0 --mask-mean-count=2 --mask-blur=10 --threshold=0.65 \
++--crops-mean-count=8 --padding=50 --output /dev/video4
++
++# --source-width=1280 --source-height=960 
+diff --git a/tf_bodypix/cli.py b/tf_bodypix/cli.py
+index c4a90fa..0714b05 100644
+--- a/tf_bodypix/cli.py
++++ b/tf_bodypix/cli.py
+@@ -16,13 +16,15 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = "3"
+ 
+ import tensorflow as tf
+ import numpy as np
++import cv2
+ 
+ from tf_bodypix.utils.timer import LoggingTimer
+ from tf_bodypix.utils.image import (
+     ImageSize,
+     resize_image_to,
+     get_image_size,
+-    box_blur_image
++    box_blur_image,
++    bounding_box
+ )
+ from tf_bodypix.utils.s3 import iter_s3_file_urls
+ from tf_bodypix.download import download_model
+@@ -521,14 +523,16 @@ class ReplaceBackgroundApp(AbstractWebcamFilterApp):
+         self.timer.on_step_start('get_mask')
+         mask = self.get_mask(result)
+         self.timer.on_step_start('compose')
++        image_size = get_image_size(image_array)
+         background_image_array = resize_image_to(
+-            background_image_array, get_image_size(image_array)
++            background_image_array, image_size
+         )
+         output = np.clip(
+             background_image_array * (1 - mask)
+             + image_array * mask,
+             0.0, 255.0
+         )
++
+         return output
+ 
+ 
+@@ -552,13 +556,114 @@ class ReplaceBackgroundSubCommand(AbstractWebcamFilterSubCommand):
+     def get_app(self, args: argparse.Namespace) -> AbstractWebcamFilterApp:
+         return ReplaceBackgroundApp(args)
+ 
++class AutoTrackApp(AbstractWebcamFilterApp):
++    def __init__(self, *args, **kwargs):
++        self.crops = []
++        super().__init__(*args, **kwargs)
++
++    def get_output_image(self, image_array: np.ndarray) -> np.ndarray:
++        # background_image_array = self.get_next_background_image(image_array)
++        result = self.get_bodypix_result(image_array)
++        self.timer.on_step_start('get_mask')
++        mask = self.get_mask(result)
++        self.timer.on_step_start('compose')
++        image_size = get_image_size(image_array)
++
++        output = image_array
++
++        # Find the bounds of the face mask
++        face_mask = result.get_part_mask(
++                mask, part_names=['left_face', 'right_face'], resize_method=DEFAULT_RESIZE_METHOD)
++
++        try:
++            bounds = bounding_box(face_mask)
++            LOGGER.debug("face bbox=%dx%d", bounds.cmax-bounds.cmin, bounds.rmax-bounds.rmin)
++
++            # Add a buffer of 20px above and below the face and 
++            # crop to the height and width to match the aspect ratio of image_size
++            PADDING = self.args.padding
++            rmin = bounds.rmin - PADDING
++            rmax = bounds.rmax + PADDING
++
++            if rmin<0:
++              rmin = 0
++              rmax = bounds.rmax-bounds.rmin + PADDING*2
++            elif rmax>=image_size.height:
++              rmax = image_size.height-1
++              rmin = rmax - (bounds.rmax-bounds.rmin + PADDING*2)
++
++            height = rmax - rmin
++            width = int(height*image_size.width / image_size.height)
++
++            cmin = int((bounds.cmin+bounds.cmax-width)/2)
++            cmax = int(cmin+width)
++
++            if cmin<0:
++              cmin = 0
++              cmax = width
++            elif cmax>=image_size.width:
++              cmax = image_size.width-1
++              cmin = cmax - width
++
++            crop = np.array([cmin, cmax, rmin, rmax])
++
++            LOGGER.debug("crop bounds=(%d-%d, %d-%d), size=(%d, %d)",
++                          crop[0], crop[1], crop[2], crop[3], width, height)
++
++            self.crops.append(crop)
++            if len(self.crops) > self.args.crops_mean_count:
++                self.crops.pop(0)
++            if len(self.crops) >= 2:
++                crop = np.mean(self.crops, axis=0).astype('i')
++
++            cropped = output[crop[2]:crop[3], crop[0]:crop[1], :]
++            # LOGGER.info("cropped shape=%dx%d", cropped.shape[1], cropped.shape[0])
++            output = cv2.resize(cropped, dsize=(image_size.width, image_size.height))
++            # LOGGER.info("output shape=%dx%d", output.shape[1], output.shape[0])
++
++        except ValueError as _:
++            LOGGER.info("No face found, not cropping")
++            # don't crop
++            return output
++
++        return output
++
++class AutoTrackSubCommand(AbstractWebcamFilterSubCommand):
++    def __init__(self):
++        super().__init__("auto-track", "Tracks the head of a person")
++
++    def add_arguments(self, parser: argparse.ArgumentParser):
++        add_common_arguments(parser)
++        add_model_arguments(parser)
++        add_source_arguments(parser)
++
++        parser.add_argument(
++            "--padding",
++            type=int,
++            default=20,
++            help="The amount of pixels to pad above and below the head."
++        )
++
++        parser.add_argument(
++            "--crops-mean-count",
++            type=int,
++            default=0,
++            help="The number of cropped boxes to average to smooth the result"
++        )
++
++        add_output_arguments(parser)
++
++    def get_app(self, args: argparse.Namespace) -> AbstractWebcamFilterApp:
++        return AutoTrackApp(args)
++
+ 
+ SUB_COMMANDS: List[SubCommand] = [
+     ListModelsSubCommand(),
+     ConvertToTFLiteSubCommand(),
+     DrawMaskSubCommand(),
+     BlurBackgroundSubCommand(),
+-    ReplaceBackgroundSubCommand()
++    ReplaceBackgroundSubCommand(),
++    AutoTrackSubCommand()
+ ]
+ 
+ SUB_COMMAND_BY_NAME: Dict[str, SubCommand] = {
+diff --git a/tf_bodypix/utils/image.py b/tf_bodypix/utils/image.py
+index 473c811..ab609ac 100644
+--- a/tf_bodypix/utils/image.py
++++ b/tf_bodypix/utils/image.py
+@@ -17,6 +17,8 @@ ImageSize = namedtuple('ImageSize', ('height', 'width'))
+ 
+ ImageArray = np.ndarray
+ 
++BoundingBox = namedtuple('BoundingBox', ('rmin', 'rmax', 'cmin', 'cmax'))
++
+ 
+ def require_opencv():
+     if cv2 is None:
+@@ -56,3 +58,21 @@ def bgr_to_rgb(image: ImageArray) -> ImageArray:
+ 
+ def rgb_to_bgr(image: ImageArray) -> ImageArray:
+     return bgr_to_rgb(image)
++
++
++def bounding_box(img: ImageArray) -> BoundingBox:
++    """
++    From https://stackoverflow.com/a/31402351/4228547
++    """
++    rows = np.any(img, axis=1)
++    cols = np.any(img, axis=0)
++
++    vRows = np.where(rows)
++    vCols = np.where(cols)
++    if len(vRows[0]) == 0 or len(vCols[0]) == 0:
++        raise ValueError("empty mask")
++
++    rmin, rmax = vRows[0][[0, -1]]
++    cmin, cmax = vCols[0][[0, -1]]
++       
++    return BoundingBox(rmin=rmin, rmax=rmax, cmin=cmin, cmax=cmax)

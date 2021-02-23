@@ -578,24 +578,33 @@ class AutoTrackApp(AbstractWebcamFilterApp):
         super().__init__(*args, **kwargs)
 
     def get_output_image(self, image_array: np.ndarray) -> np.ndarray:
-        # background_image_array = self.get_next_background_image(image_array)
-        result = self.get_bodypix_result(image_array)
+
+        self.timer.on_step_start('rescale')
+        WIDTH = 640
+        HEIGHT= 480
+        scaled_image_array = image_array
+        image_size = get_image_size(image_array)
+        if image_size.width!=WIDTH and image_size.height!=HEIGHT:
+            scaled_image_array = cv2.resize(image_array, dsize=(WIDTH, HEIGHT))
+
+        self.timer.on_step_start('bodypix')
+        result = self.get_bodypix_result(scaled_image_array)
+
         self.timer.on_step_start('get_mask')
         mask = self.get_mask(result)
-        self.timer.on_step_start('compose')
-        image_size = get_image_size(image_array)
 
-        output = image_array
-
-        # Find the bounds of the face mask
-        face_mask = result.get_part_mask(
-                mask, part_names=['left_face', 'right_face'], resize_method=DEFAULT_RESIZE_METHOD)
+        self.timer.on_step_start('track')
 
         try:
+
+            # Find the bounds of the face mask
+            face_mask = result.get_part_mask(
+                mask, part_names=['left_face', 'right_face'], resize_method=DEFAULT_RESIZE_METHOD)
+
             bounds = bounding_box(face_mask)
             LOGGER.debug("face bbox=%dx%d", bounds.cmax-bounds.cmin, bounds.rmax-bounds.rmin)
 
-            # Add a buffer of 20px above and below the face and 
+            # Add padding above and below the face mask and 
             # crop to the height and width to match the aspect ratio of image_size
             PADDING = self.args.padding
             rmin = bounds.rmin - PADDING
@@ -609,10 +618,10 @@ class AutoTrackApp(AbstractWebcamFilterApp):
               rmin = rmax - (bounds.rmax-bounds.rmin + PADDING*2)
 
             height = rmax - rmin
-            width = int(height*image_size.width / image_size.height)
+            width = height*image_size.width / image_size.height
 
-            cmin = int((bounds.cmin+bounds.cmax-width)/2)
-            cmax = int(cmin+width)
+            cmin = (bounds.cmin+bounds.cmax-width)/2
+            cmax = cmin+width
 
             if cmin<0:
               cmin = 0
@@ -621,7 +630,7 @@ class AutoTrackApp(AbstractWebcamFilterApp):
               cmax = image_size.width-1
               cmin = cmax - width
 
-            crop = np.array([cmin, cmax, rmin, rmax])
+            crop = np.array([cmin, cmax, rmin, rmax], dtype=float)
 
             LOGGER.debug("crop bounds=(%d-%d, %d-%d), size=(%d, %d)",
                           crop[0], crop[1], crop[2], crop[3], width, height)
@@ -630,20 +639,22 @@ class AutoTrackApp(AbstractWebcamFilterApp):
             if len(self.crops) > self.args.crops_mean_count:
                 self.crops.pop(0)
             if len(self.crops) >= 2:
-                crop = np.mean(self.crops, axis=0).astype('i')
+                crop = np.mean(self.crops, axis=0).astype('f')
 
-            cropped = output[crop[2]:crop[3], crop[0]:crop[1], :]
+            aspect_ratio = image_size.width / WIDTH
+            crop *= aspect_ratio
+
+            cropped = image_array[int(crop[2]):int(crop[3]), int(crop[0]):int(crop[1]), :]
             # LOGGER.info("cropped shape=%dx%d", cropped.shape[1], cropped.shape[0])
-            output = cv2.resize(cropped, dsize=(image_size.width, image_size.height))
+            output = cv2.resize(cropped, dsize=(WIDTH, HEIGHT))
             # LOGGER.info("output shape=%dx%d", output.shape[1], output.shape[0])
+
+            return output
 
         except ValueError as _:
             LOGGER.info("No face found, not cropping")
-            # don't crop
-            return output
 
-        return output
-
+        return scaled_image_array
 class AutoTrackSubCommand(AbstractWebcamFilterSubCommand):
     def __init__(self):
         super().__init__("auto-track", "Tracks the head of a person")
